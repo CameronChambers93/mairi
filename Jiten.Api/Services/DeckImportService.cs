@@ -328,7 +328,7 @@ public partial class DeckImportService(
         var previewData = await db.StringGetAsync($"import-preview:{request.PreviewToken}");
         if (!previewData.HasValue) return new(null, "Preview has expired. Please re-upload the file.");
 
-        var matched = JsonSerializer.Deserialize<List<ImportMatchedWord>>(previewData!);
+        var matched = JsonSerializer.Deserialize<List<ImportMatchedWord>>((string)previewData!);
         if (matched == null) return new(null, "Failed to read preview data. Please re-upload the file.");
 
         var excludeSet = request.ExcludeWordIds?.ToHashSet() ?? new HashSet<int>();
@@ -508,7 +508,7 @@ public partial class DeckImportService(
         var previewData = await db.StringGetAsync($"import-preview:{request.PreviewToken}");
         if (!previewData.HasValue) return new(null, "Preview has expired. Please try again.");
 
-        var matched = JsonSerializer.Deserialize<List<ImportMatchedWord>>(previewData!);
+        var matched = JsonSerializer.Deserialize<List<ImportMatchedWord>>((string)previewData!);
         if (matched == null) return new(null, "Failed to read preview data.");
 
         var excludeSet = request.ExcludeWordIds?.ToHashSet() ?? new HashSet<int>();

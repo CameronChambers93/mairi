@@ -3,7 +3,6 @@
 import tailwindcss from '@tailwindcss/vite';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import * as fs from 'node:fs';
 
 const { devDependencies } = JSON.parse(readFileSync(path.resolve(__dirname, 'package.json'), 'utf8'));
 const iconifyPackagePrefix = '@iconify-json/';
@@ -248,8 +247,8 @@ export default defineNuxtConfig({
     process.env.NODE_ENV === 'development'
       ? {
           https: {
-            key: fs.readFileSync(path.resolve(__dirname, 'localhost-key.pem')).toString(),
-            cert: fs.readFileSync(path.resolve(__dirname, 'localhost.pem')).toString(),
+            key: path.resolve(__dirname, 'localhost-key.pem'),
+            cert: path.resolve(__dirname, 'localhost.pem'),
           },
         }
       : {},
