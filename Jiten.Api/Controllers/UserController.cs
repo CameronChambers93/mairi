@@ -4335,7 +4335,7 @@ public partial class UserController(
         var cached = await redisDb.StringGetAsync(cacheKey);
         if (!cached.IsNullOrEmpty)
         {
-            var hit = JsonSerializer.Deserialize<ProfileVocabularyStatsDto>(cached!);
+            var hit = JsonSerializer.Deserialize<ProfileVocabularyStatsDto>((string)cached!);
             if (hit != null) return Results.Ok(hit);
         }
 
@@ -4397,7 +4397,7 @@ public partial class UserController(
 
         if (!cached.IsNullOrEmpty)
         {
-            allKanji = JsonSerializer.Deserialize<List<CachedKanjiInfo>>(cached!);
+            allKanji = JsonSerializer.Deserialize<List<CachedKanjiInfo>>((string)cached!);
         }
         else
         {
