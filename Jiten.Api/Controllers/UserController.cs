@@ -333,7 +333,7 @@ public partial class UserController(
         var blacklistedIds = (request.BlacklistedWordIds ?? []).Where(id => id > 0).Distinct().ToList();
         var suspendedIds = (request.SuspendedWordIds ?? []).Where(id => id > 0).Distinct().ToList();
         var cards = (request.Cards ?? [])
-                    .Where(c => c.WordId is > 0 and <= int.MaxValue && ParseImportState(c.State) != null)
+                    .Where(c => c.WordId > 0 && ParseImportState(c.State) != null)
                     .ToList();
 
         var allIds = knownIds.Union(blacklistedIds).Union(suspendedIds).Union(cards.Select(c => c.WordId)).ToList();
@@ -357,7 +357,7 @@ public partial class UserController(
             .GroupBy(wff => wff.WordId)
             .ToDictionary(g => g.Key, g => g.OrderBy(wff => wff.ReadingIndex).ToList());
 
-        var cardWordIds = cards.Select(c => (int)c.WordId).Distinct().ToList();
+        var cardWordIds = cards.Where(c => c.WordId <= int.MaxValue).Select(c => (int)c.WordId).Distinct().ToList();
         var formsByWord = cardWordIds.Count == 0
             ? new Dictionary<int, List<JmDictWordForm>>()
             : (await jitenContext.WordForms
@@ -394,12 +394,13 @@ public partial class UserController(
         var unmatchedWords = new List<ImportSkippedWord>();
         foreach (var card in cards)
         {
-            var wordId = (int)card.WordId;
-            if (!jmdictWordIdSet.Contains(wordId))
+            if (card.WordId > int.MaxValue || !jmdictWordIdSet.Contains((int)card.WordId))
             {
-                unmatchedWords.Add(new ImportSkippedWord(wordId, card.Spelling, ImportSkipReason.NotInDictionary));
+                unmatchedWords.Add(new ImportSkippedWord(card.WordId, card.Spelling, ImportSkipReason.NotInDictionary));
                 continue;
             }
+
+            var wordId = (int)card.WordId;
 
             var readingIndex = formsByWord.TryGetValue(wordId, out var forms) && forms.Any(f => f.Text == card.Spelling)
                 ? ResolveReadingIndex(forms, card.Spelling)
@@ -1687,6 +1688,27 @@ public partial class UserController(
         if (request?.Cards == null || request.Cards.Count == 0)
             return Results.BadRequest("No cards provided.");
 
+        await userContext.Database.OpenConnectionAsync();
+        try
+        {
+            await LockAnkiImport(userId, HttpContext.RequestAborted);
+            try
+            {
+                return await ImportAnkiCardsWithRetry(request, userId);
+            }
+            finally
+            {
+                await UnlockAnkiImport(userId);
+            }
+        }
+        finally
+        {
+            await userContext.Database.CloseConnectionAsync();
+        }
+    }
+
+    private async Task<IResult> ImportAnkiCardsWithRetry(AnkiImportRequest request, string userId)
+    {
         for (var attempt = 0;; attempt++)
         {
             try
@@ -1702,12 +1724,25 @@ public partial class UserController(
                     return Results.Problem("Import failed: " + ex.Message);
                 }
 
-                logger.LogInformation("Anki import chunk collided with a concurrent chunk, retrying: UserId={UserId}, Attempt={Attempt}",
+                logger.LogInformation("Anki import collided with a concurrent card write, retrying: UserId={UserId}, Attempt={Attempt}",
                                       userId, attempt + 1);
             }
         }
     }
 
+    /// <summary>Serialises one user's parallel import chunks, which can touch the same card; session-scoped, so the connection must stay open until unlock.</summary>
+    private Task LockAnkiImport(string userId, CancellationToken ct) =>
+        userContext.Database.IsNpgsql()
+            ? userContext.Database.ExecuteSqlRawAsync("SELECT pg_advisory_lock({0}, hashtext({1}))", [AnkiImportLockClass, userId], ct)
+            : Task.CompletedTask;
+
+    private Task UnlockAnkiImport(string userId) =>
+        userContext.Database.IsNpgsql()
+            ? userContext.Database.ExecuteSqlRawAsync("SELECT pg_advisory_unlock({0}, hashtext({1}))", AnkiImportLockClass, userId)
+            : Task.CompletedTask;
+
+    /// <summary>Namespaces the import's advisory locks so the per-user key cannot collide with another feature's.</summary>
+    private const int AnkiImportLockClass = 0x414E4B;
     private const int MaxAnkiImportConflictRetries = 2;
     private const long MaxAnkiImportBodyBytes = 30_000_000;
 
@@ -4300,7 +4335,7 @@ public partial class UserController(
         var cached = await redisDb.StringGetAsync(cacheKey);
         if (!cached.IsNullOrEmpty)
         {
-            var hit = JsonSerializer.Deserialize<ProfileVocabularyStatsDto>(cached!);
+            var hit = JsonSerializer.Deserialize<ProfileVocabularyStatsDto>((string)cached!);
             if (hit != null) return Results.Ok(hit);
         }
 
@@ -4362,7 +4397,7 @@ public partial class UserController(
 
         if (!cached.IsNullOrEmpty)
         {
-            allKanji = JsonSerializer.Deserialize<List<CachedKanjiInfo>>(cached!);
+            allKanji = JsonSerializer.Deserialize<List<CachedKanjiInfo>>((string)cached!);
         }
         else
         {

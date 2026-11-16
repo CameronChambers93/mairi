@@ -7,6 +7,7 @@ using CsvHelper.Configuration;
 using Jiten.Api.Helpers;
 using Jiten.Cli;
 using Jiten.Core;
+using Jiten.Core.Data;
 using Jiten.Core.Data.JMDict;
 using Jiten.Core.Data.User;
 using Microsoft.EntityFrameworkCore;
@@ -65,11 +66,12 @@ public class JpdbDeckImportItem
     public List<JpdbWordRef> Words { get; set; } = new();
 }
 
+/// <summary>Ids and counts are long: JPDB-only vocabulary has vids beyond int range, and an int field would fail binding for the whole request.</summary>
 public class JpdbWordRef
 {
-    public int WordId { get; set; }
+    public long WordId { get; set; }
     public string Spelling { get; set; } = "";
-    public int Occurrences { get; set; } = 1;
+    public long Occurrences { get; set; } = 1;
 }
 
 public class JpdbDeckImportDeckResult
@@ -215,11 +217,38 @@ public partial class DeckImportService(
                           })
                           .ToList();
 
+        await SetDictionaryReadings(matched);
+
         var previewToken = Guid.NewGuid().ToString("N");
         var db = redis.GetDatabase();
         await db.StringSetAsync($"import-preview:{previewToken}", JsonSerializer.Serialize(matched), PreviewTtl);
 
         return new ImportPreviewResponse { Matched = matched, Unmatched = [], TotalLines = matched.Count, PreviewToken = previewToken };
+    }
+
+    private async Task SetDictionaryReadings(List<ImportMatchedWord> matched)
+    {
+        if (matched.Count == 0) return;
+
+        var wordIds = matched.Select(m => m.WordId).Distinct().ToList();
+        await using var jitenContext = await contextFactory.CreateDbContextAsync();
+        var forms = await jitenContext.WordForms
+                                      .AsNoTracking()
+                                      .Where(f => wordIds.Contains(f.WordId))
+                                      .Select(f => new JmDictWordForm
+                                                   {
+                                                       WordId = f.WordId, ReadingIndex = f.ReadingIndex, Text = f.Text,
+                                                       RubyText = f.RubyText, FormType = f.FormType
+                                                   })
+                                      .ToListAsync();
+        var formsByWord = forms.GroupBy(f => f.WordId).ToDictionary(g => g.Key, g => g.ToList());
+
+        foreach (var word in matched)
+        {
+            if (!formsByWord.TryGetValue(word.WordId, out var wordForms)) continue;
+            var form = wordForms.FirstOrDefault(f => f.ReadingIndex == word.ReadingIndex);
+            if (form != null) word.Reading = RubyTextHelper.FormReading(form, wordForms);
+        }
     }
 
     private async Task<string> StoreEmpty()
@@ -240,23 +269,50 @@ public partial class DeckImportService(
             textCounts[t] = textCounts.GetValueOrDefault(t) + 1;
 
         var distinctTexts = textCounts.Keys.ToList();
-        var deckWords = await Parser.Parser.GetWordsDirectLookup(contextFactory, distinctTexts);
-        var matchedTexts = deckWords.Select(dw => dw.OriginalText).ToHashSet();
 
-        var matched = deckWords
-                      .GroupBy(dw => (dw.WordId, dw.ReadingIndex))
+        var annotated = new Dictionary<string, (string Word, string Reading)>();
+        foreach (var text in distinctTexts)
+        {
+            var (word, hints) = Parser.FuriganaHintExtractor.Extract(text);
+            if (hints.Length > 0)
+                annotated[text] = (word, Parser.FuriganaHintExtractor.ApplyReadings(word, hints));
+        }
+
+        var surfaces = distinctTexts.Select(t => annotated.TryGetValue(t, out var a) ? a.Word : t).Distinct().ToList();
+        var bySurface = (await Parser.Parser.GetWordsDirectLookup(contextFactory, surfaces))
+                        .GroupBy(dw => dw.OriginalText)
+                        .ToDictionary(g => g.Key, g => g.First());
+        var byReading = annotated.Count > 0
+            ? await Parser.Parser.GetWordsDirectLookupByReading(contextFactory, annotated.Values.Distinct().ToList())
+            : [];
+
+        var resolved = new List<(DeckWord Word, int Occurrences)>();
+        var unmatched = new List<string>();
+        foreach (var text in distinctTexts)
+        {
+            DeckWord? deckWord;
+            if (annotated.TryGetValue(text, out var pair))
+                deckWord = byReading.GetValueOrDefault(pair) ?? bySurface.GetValueOrDefault(pair.Word);
+            else
+                deckWord = bySurface.GetValueOrDefault(text);
+
+            if (deckWord == null) unmatched.Add(text);
+            else resolved.Add((deckWord, textCounts[text]));
+        }
+
+        var matched = resolved
+                      .GroupBy(r => (r.Word.WordId, r.Word.ReadingIndex))
                       .Select(g =>
                       {
-                          var first = g.First();
-                          var occurrences = g.Sum(dw => textCounts.GetValueOrDefault(dw.OriginalText, 1));
+                          var first = g.First().Word;
                           return new ImportMatchedWord
                                  {
                                      WordId = first.WordId, ReadingIndex = first.ReadingIndex, Text = first.OriginalText,
-                                     Reading = first.SudachiReading, Occurrences = occurrences
+                                     Reading = first.SudachiReading, Occurrences = g.Sum(r => r.Occurrences)
                                  };
                       }).ToList();
 
-        var unmatched = distinctTexts.Where(t => !matchedTexts.Contains(t)).ToList();
+        await SetDictionaryReadings(matched);
 
         var previewToken = Guid.NewGuid().ToString("N");
         var db = redis.GetDatabase();
@@ -272,7 +328,7 @@ public partial class DeckImportService(
         var previewData = await db.StringGetAsync($"import-preview:{request.PreviewToken}");
         if (!previewData.HasValue) return new(null, "Preview has expired. Please re-upload the file.");
 
-        var matched = JsonSerializer.Deserialize<List<ImportMatchedWord>>(previewData!);
+        var matched = JsonSerializer.Deserialize<List<ImportMatchedWord>>((string)previewData!);
         if (matched == null) return new(null, "Failed to read preview data. Please re-upload the file.");
 
         var excludeSet = request.ExcludeWordIds?.ToHashSet() ?? new HashSet<int>();
@@ -337,7 +393,11 @@ public partial class DeckImportService(
                            .ToList();
         if (items.Count == 0) return new([], "No decks to import.");
 
-        var wordIds = items.SelectMany(d => d.Words).Select(w => w.WordId).Distinct().ToList();
+        var wordIds = items.SelectMany(d => d.Words)
+                           .Where(w => w.WordId is > 0 and <= int.MaxValue)
+                           .Select(w => (int)w.WordId)
+                           .Distinct()
+                           .ToList();
         Dictionary<int, List<JmDictWordForm>> formsByWord;
         await using (var jitenContext = await contextFactory.CreateDbContextAsync())
         {
@@ -356,14 +416,15 @@ public partial class DeckImportService(
             var unmatched = new List<JpdbWordRef>();
             foreach (var w in item.Words)
             {
-                if (!formsByWord.TryGetValue(w.WordId, out var forms))
+                if (w.WordId is <= 0 or > int.MaxValue || !formsByWord.TryGetValue((int)w.WordId, out var forms))
                 {
                     unmatched.Add(w);
                     continue;
                 }
 
+                var wordId = (int)w.WordId;
                 var readingIndex = (short)(forms.FirstOrDefault(f => f.Text == w.Spelling)?.ReadingIndex ?? 0);
-                if (seen.Add((w.WordId, readingIndex))) words.Add((w.WordId, readingIndex, Math.Max(1, w.Occurrences)));
+                if (seen.Add((wordId, readingIndex))) words.Add((wordId, readingIndex, (int)Math.Clamp(w.Occurrences, 1, int.MaxValue)));
             }
 
             resolved.Add((item, words, unmatched));
@@ -447,7 +508,7 @@ public partial class DeckImportService(
         var previewData = await db.StringGetAsync($"import-preview:{request.PreviewToken}");
         if (!previewData.HasValue) return new(null, "Preview has expired. Please try again.");
 
-        var matched = JsonSerializer.Deserialize<List<ImportMatchedWord>>(previewData!);
+        var matched = JsonSerializer.Deserialize<List<ImportMatchedWord>>((string)previewData!);
         if (matched == null) return new(null, "Failed to read preview data.");
 
         var excludeSet = request.ExcludeWordIds?.ToHashSet() ?? new HashSet<int>();

@@ -1,8 +1,14 @@
 // https://nuxt.com/docs/api/configuration/nuxt-config
 
 import tailwindcss from '@tailwindcss/vite';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import * as fs from 'node:fs';
+
+const { devDependencies } = JSON.parse(readFileSync(path.resolve(__dirname, 'package.json'), 'utf8'));
+const iconifyPackagePrefix = '@iconify-json/';
+const installedIconCollections = Object.keys(devDependencies)
+  .filter((name) => name.startsWith(iconifyPackagePrefix))
+  .map((name) => name.slice(iconifyPackagePrefix.length));
 
 export default defineNuxtConfig({
   compatibilityDate: '2025-07-14',
@@ -99,6 +105,12 @@ export default defineNuxtConfig({
     // The import map keeps chunk hashes stable while their __vite__mapDeps still name the entry JS and CSS,
     // so the CDN serves stale chunks that inject a previous build's entry CSS over the current one.
     entryImportMap: false,
+  },
+  icon: {
+    serverBundle: { collections: installedIconCollections },
+    clientBundle: {
+      scan: { globInclude: ['app/components/AppHeader*.vue'] },
+    },
   },
   primevue: {
     // Build-time theme import; putting the preset in `options.theme` instead would serialise
@@ -235,8 +247,8 @@ export default defineNuxtConfig({
     process.env.NODE_ENV === 'development'
       ? {
           https: {
-            key: fs.readFileSync(path.resolve(__dirname, 'localhost-key.pem')).toString(),
-            cert: fs.readFileSync(path.resolve(__dirname, 'localhost.pem')).toString(),
+            key: path.resolve(__dirname, 'localhost-key.pem'),
+            cert: path.resolve(__dirname, 'localhost.pem'),
           },
         }
       : {},

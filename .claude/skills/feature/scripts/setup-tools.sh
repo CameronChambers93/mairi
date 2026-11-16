@@ -13,7 +13,7 @@ PLAYWRIGHT_BROWSERS_PATH="$TOOLS/pw/browsers" "$TOOLS/pw/node_modules/.bin/playw
 
 if [ ! -x "$TOOLS/ef/dotnet-ef" ]; then
   # Match Microsoft.EntityFrameworkCore.Design in Jiten.Core.csproj.
-  dotnet tool install dotnet-ef --version 9.0.2 --tool-path "$TOOLS/ef" >/dev/null
+  dotnet tool install dotnet-ef --version 10.0.14 --tool-path "$TOOLS/ef" >/dev/null
 fi
 [ -f "$TOOLS/jiten-login.env" ] || echo "no login file: create $TOOLS/jiten-login.env (mode 600) with JITEN_USER= and JITEN_PASSWORD= lines"
 echo "tools ready in $TOOLS"

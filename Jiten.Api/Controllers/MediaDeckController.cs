@@ -760,7 +760,7 @@ public class MediaDeckController(
                                                  dt."TitleType",
                                                  LENGTH(dt."Title") AS title_length
                                           FROM jiten."DeckTitles" dt
-                                          WHERE (dt."Title" &@~ {{originalFilter}} OR ({{hasRomajiVariant}} AND dt."Title" &@~ {{romajiFilter}}))
+                                          WHERE (dt."Title" &@~ pgroonga_query_escape({{originalFilter}}) OR ({{hasRomajiVariant}} AND dt."Title" &@~ pgroonga_query_escape({{romajiFilter}})))
                                             AND dt."DeckId" NOT IN (SELECT "DeckId" FROM exact_matches)
                                       ),
                                       fuzzy_nospace_matches AS (
@@ -771,7 +771,7 @@ public class MediaDeckController(
                                                  LENGTH(dt."TitleNoSpaces") AS title_length
                                           FROM jiten."DeckTitles" dt
                                           WHERE dt."TitleType" IN (1, 3)
-                                            AND (dt."TitleNoSpaces" &@~ {{filterNoSpaces}} OR ({{hasRomajiVariant}} AND dt."TitleNoSpaces" &@~ {{romajiFilterNoSpaces}}))
+                                            AND (dt."TitleNoSpaces" &@~ pgroonga_query_escape({{filterNoSpaces}}) OR ({{hasRomajiVariant}} AND dt."TitleNoSpaces" &@~ pgroonga_query_escape({{romajiFilterNoSpaces}})))
                                             AND dt."DeckId" NOT IN (SELECT "DeckId" FROM exact_matches)
                                             AND dt."DeckId" NOT IN (SELECT "DeckId" FROM fuzzy_title_matches)
                                       ),
@@ -1197,8 +1197,8 @@ public class MediaDeckController(
                        .OrderByDescending(d => d.CharacterCount)
                        .ThenBy(d => d.DeckId),
             "sentenceLength" => sortOrder == SortOrder.Ascending
-                ? query.OrderBy(d => d.CharacterCount / (d.SentenceCount + 1)).ThenBy(d => d.DeckId).Where(d => d.SentenceCount != 0 && !d.HideAverageSentenceLength)
-                : query.OrderByDescending(d => d.CharacterCount / (d.SentenceCount + 1)).ThenBy(d => d.DeckId).Where(d => d.SentenceCount != 0 && !d.HideAverageSentenceLength),
+                ? query.OrderBy(d => (double)d.CharacterCount / d.SentenceCount).ThenBy(d => d.DeckId).Where(d => d.SentenceCount > 1 && !d.HideAverageSentenceLength)
+                : query.OrderByDescending(d => (double)d.CharacterCount / d.SentenceCount).ThenBy(d => d.DeckId).Where(d => d.SentenceCount > 1 && !d.HideAverageSentenceLength),
             "dialoguePercentage" => sortOrder == SortOrder.Ascending
                 ? query.OrderBy(d => d.DialoguePercentage)
                        .ThenBy(d => d.DeckId)
@@ -1289,8 +1289,8 @@ public class MediaDeckController(
                        .OrderByDescending(p => p.Deck.CharacterCount)
                        .ThenBy(p => p.Deck.DeckId),
             "sentenceLength" => sortOrder == SortOrder.Ascending
-                ? query.OrderBy(p => p.Deck.CharacterCount / (p.Deck.SentenceCount + 1)).ThenBy(p => p.Deck.DeckId).Where(p => p.Deck.SentenceCount != 0 && !p.Deck.HideAverageSentenceLength)
-                : query.OrderByDescending(p => p.Deck.CharacterCount / (p.Deck.SentenceCount + 1)).ThenBy(p => p.Deck.DeckId).Where(p => p.Deck.SentenceCount != 0 && !p.Deck.HideAverageSentenceLength),
+                ? query.OrderBy(p => (double)p.Deck.CharacterCount / p.Deck.SentenceCount).ThenBy(p => p.Deck.DeckId).Where(p => p.Deck.SentenceCount > 1 && !p.Deck.HideAverageSentenceLength)
+                : query.OrderByDescending(p => (double)p.Deck.CharacterCount / p.Deck.SentenceCount).ThenBy(p => p.Deck.DeckId).Where(p => p.Deck.SentenceCount > 1 && !p.Deck.HideAverageSentenceLength),
             "dialoguePercentage" => sortOrder == SortOrder.Ascending
                 ? query.OrderBy(p => p.Deck.DialoguePercentage)
                        .ThenBy(p => p.Deck.DeckId)
@@ -2791,10 +2791,10 @@ public class MediaDeckController(
                                           FROM jiten."DeckTitles" dt
                                           JOIN jiten."Decks" d ON d."DeckId" = dt."DeckId"
                                           WHERE d."ParentDeckId" = {{parentId}}
-                                            AND (dt."Title" &@~ {{filter}}
-                                                 OR dt."TitleNoSpaces" &@~ {{filterNoSpaces}}
-                                                 OR ({{hasRomajiVariant}} AND (dt."Title" &@~ {{romajiFilter}} OR dt."TitleNoSpaces" &@~ {{romajiFilterNoSpaces}}))
-                                                 OR ({{hasKana}} AND (dt."Title" &@~ {{kana1}} OR dt."Title" &@~ {{kana2}})))
+                                            AND (dt."Title" &@~ pgroonga_query_escape({{filter}})
+                                                 OR dt."TitleNoSpaces" &@~ pgroonga_query_escape({{filterNoSpaces}})
+                                                 OR ({{hasRomajiVariant}} AND (dt."Title" &@~ pgroonga_query_escape({{romajiFilter}}) OR dt."TitleNoSpaces" &@~ pgroonga_query_escape({{romajiFilterNoSpaces}})))
+                                                 OR ({{hasKana}} AND (dt."Title" &@~ pgroonga_query_escape({{kana1}}) OR dt."Title" &@~ pgroonga_query_escape({{kana2}}))))
                                             AND dt."DeckId" NOT IN (SELECT "DeckId" FROM exact_matches)
                                       ),
                                       ranked AS (
